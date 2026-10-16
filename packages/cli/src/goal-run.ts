@@ -1,7 +1,8 @@
 import { compiledPrompt, COMPILED_HELP, type CompiledState } from "./compiled.ts";
 import { controlPaths, isTaskMessage } from "./board-controls.ts";
 import { TASK_HELP, MENTION_HELP, TASK_PROFILE, TASK_HOOK, TASK_HOOK_SETTINGS } from "./task-guard.ts";
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, realpathSync } from "node:fs";
 import { appendFile, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join, relative } from "node:path";
@@ -9,6 +10,7 @@ import { dirname, join, relative } from "node:path";
 import type { ApiClient } from "./api-client.ts";
 import { localError } from "./errors.ts";
 import { goalWatch, type GoalWatchResult } from "./goal.ts";
+import type { GoalRunHarnessResolution } from "./harness-modes.ts";
 import { mentions } from "./triggers.ts";
 
 /**
@@ -104,6 +106,105 @@ export function dockerRunner(baseEnv: Record<string, string | undefined>): Docke
       });
       child.stdin.end(options.input ?? "");
     });
+}
+
+function git(args: readonly string[], cwd: string): Promise<{ code: number; stdout: string }> {
+  return new Promise((resolveGit) => {
+    execFile("git", [...args], { cwd, maxBuffer: 64 * 1024 }, (error, stdout) => {
+      resolveGit({ code: error ? 1 : 0, stdout: String(stdout) });
+    });
+  });
+}
+
+/** Do not mistake a consuming application's repository for the installed CLI's source. */
+async function repositoryIdentity(cwd: string): Promise<{ commit: string | null; dirty: boolean | null }> {
+  const remote = await git(["config", "--get", "remote.origin.url"], cwd);
+  if (remote.code !== 0 || !/(?:^|[/:])systemind-team\/sharednet-client(?:\.git)?$/.test(remote.stdout.trim())) {
+    return { commit: null, dirty: null };
+  }
+  const head = await git(["rev-parse", "HEAD"], cwd);
+  const commit = head.stdout.trim().toLowerCase();
+  const status = await git(["status", "--porcelain", "--untracked-files=all"], cwd);
+  if (head.code !== 0 || !/^[0-9a-f]{40,64}$/.test(commit) || status.code !== 0) return { commit: null, dirty: null };
+  const dirty = status.stdout.length > 0;
+  return { commit: dirty ? null : commit, dirty };
+}
+
+/** Package metadata survives npm installation even when the source repository and its commit do not. */
+async function packageIdentity(root: string, entry: string): Promise<{
+  packageVersion: string | null;
+  packageManifestSha256: string | null;
+  entrySha256: string | null;
+}> {
+  let packageVersion: string | null = null;
+  let packageManifestSha256: string | null = null;
+  let entrySha256: string | null = null;
+  try {
+    const manifest = await readFile(join(root, "package.json"), "utf8");
+    const parsed = JSON.parse(manifest) as { version?: unknown };
+    packageVersion = typeof parsed.version === "string" && parsed.version.length > 0 ? parsed.version : null;
+    packageManifestSha256 = sha256(manifest);
+  } catch {}
+  try {
+    entrySha256 = sha256(await readFile(join(root, entry), "utf8"));
+  } catch {}
+  return { packageVersion, packageManifestSha256, entrySha256 };
+}
+
+async function codeTreeSha256(root: string, entry: string): Promise<string | null> {
+  const normalizedEntry = entry.replaceAll("\\", "/");
+  const roots = normalizedEntry.startsWith("src/") ? ["src"] : normalizedEntry.startsWith("bin/") ? ["bin", "dist"] : [normalizedEntry];
+  const files: string[] = [];
+  const collect = async (relativePath: string): Promise<void> => {
+    const absolutePath = join(root, relativePath);
+    try {
+      const entries = await readdir(absolutePath, { withFileTypes: true });
+      for (const child of entries.sort((left, right) => left.name < right.name ? -1 : left.name > right.name ? 1 : 0)) {
+        const childPath = `${relativePath.replaceAll("\\", "/")}/${child.name}`;
+        if (child.isDirectory()) await collect(childPath);
+        else if (child.isFile()) files.push(childPath);
+      }
+    } catch {
+      if (existsSync(absolutePath)) files.push(relativePath.replaceAll("\\", "/"));
+    }
+  };
+  for (const candidate of roots) await collect(candidate);
+  const runtimeFiles = files.filter((file) => !file.endsWith(".test.ts") && !file.endsWith(".test.js") && !file.endsWith(".map"));
+  if (runtimeFiles.length === 0) return null;
+  const digest = createHash("sha256");
+  for (const file of runtimeFiles.sort()) {
+    digest.update(file).update("\0").update(sha256(await readFile(join(root, file)))).update("\n");
+  }
+  return digest.digest("hex");
+}
+
+function sha256(value: string | Buffer): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+export interface CodeProvenance {
+  clientCommit: string | null;
+  runnerCommit: string | null;
+  sourceWorktreeDirty: boolean | null;
+  packageVersion: string | null;
+  packageManifestSha256: string | null;
+  entrySha256: string | null;
+  codeTreeSha256: string | null;
+}
+
+export async function discoverCodeProvenance(cli: { root: string; entry: string }): Promise<CodeProvenance> {
+  const [repository, packageMetadata, codeTree] = await Promise.all([
+    repositoryIdentity(cli.root),
+    packageIdentity(cli.root, cli.entry),
+    codeTreeSha256(cli.root, cli.entry),
+  ]);
+  return {
+    clientCommit: repository.commit,
+    runnerCommit: repository.commit,
+    sourceWorktreeDirty: repository.dirty,
+    ...packageMetadata,
+    codeTreeSha256: codeTree,
+  };
 }
 
 /** The image the Agents run in when no --image is given; built on first use. */
@@ -440,6 +541,10 @@ export interface GoalRunInput {
   mentionGate?: boolean;
   taskGate?: boolean;
   messageRouting?: MessageRouting;
+  /** A canonical treatment selected by --harness-mode. Omission preserves legacy ad-hoc flags. */
+  harnessMode?: GoalRunHarnessResolution;
+  /** Tests and artifact builders may supply provenance; source runs discover repository and package identity. */
+  codeProvenance?: CodeProvenance;
 }
 
 export interface GoalRunDependencies {
@@ -470,7 +575,26 @@ export async function runGoal(
   const turnLimitSeconds = Math.round((input.turnLimitMs ?? TURN_LIMIT_SECONDS * 1000) / 1000);
   const base = input.baseUrl;
   const messageRouting = input.messageRouting ?? (input.mentionGate ? "mentions" : "broadcast");
+  const mentionGate = input.mentionGate ?? false;
+  const taskGate = input.taskGate ?? false;
+  if (
+    input.harnessMode
+    && (input.roomType !== input.harnessMode.profile.room_type
+      || mentionGate !== input.harnessMode.profile.mention_gate
+      || taskGate !== input.harnessMode.profile.task_gate
+      || messageRouting !== input.harnessMode.profile.message_routing)
+  ) {
+    throw localError("harness_mode_mismatch", `${input.harnessMode.name} does not match the resolved Room, gate, and routing controls.`);
+  }
+  if (input.harnessMode && plan.agents.some((agent) => agent.model === null)) {
+    throw localError("harness_model_required", "A frozen --harness-mode requires every Agent to pin its model.");
+  }
   if (input.roomType === "compiled" && (input.mentionGate || input.taskGate || messageRouting === "mentions")) throw localError("invalid_arguments", "The mention/task controls are for plain board Rooms.");
+  const codeProvenance = input.codeProvenance ?? await discoverCodeProvenance(plan.cli);
+  if (input.harnessMode && codeProvenance.sourceWorktreeDirty) {
+    throw localError("dirty_harness_source", "A frozen --harness-mode cannot run from a dirty sharednet-client checkout; commit or stash the CLI changes first.");
+  }
+  const openingPromptHashes: Record<string, string> = {};
   await mkdir(input.out, { recursive: true });
   const wakeLog = join(input.out, "wakes.ndjson");
   await writeFile(wakeLog, "");
@@ -677,6 +801,7 @@ export async function runGoal(
     // Every seat starts once. Subsequent wakes follow the configured routing policy.
     const seatLoop = async (seat: SeatRecord) => {
       let prompt = openingPrompt({ seat, seats: records, roomType: input.roomType, roomId: input.roomId, goal: input.goal, goalSequence: input.goalSequence, until: input.until, mentionGate: input.mentionGate, taskGate: input.taskGate, messageRouting });
+      openingPromptHashes[seat.name] = sha256(prompt);
       let wake: WakeShape | null = null;
       let failedInARow = 0;
       while (!ended) {
@@ -749,6 +874,16 @@ export async function runGoal(
     }
     const episodePath = join(input.out, "episode.json");
     const episode = JSON.parse(await readFile(episodePath, "utf8")) as Record<string, unknown>;
+    const adHocProfile = {
+      command: "goal run",
+      room_type: input.roomType ?? "board",
+      delivery: "runner-owned-turn-loop",
+      initial_wake: "all-seats",
+      mention_gate: mentionGate,
+      task_gate: taskGate,
+      message_routing: messageRouting,
+    };
+    const profile = input.harnessMode?.profile ?? adHocProfile;
     await writeFile(
       episodePath,
       `${JSON.stringify(
@@ -760,6 +895,27 @@ export async function runGoal(
           mention_gate: input.mentionGate ?? false,
           task_gate: input.taskGate ?? false,
           message_routing: messageRouting,
+          harness: {
+            mode: input.harnessMode?.name ?? null,
+            spec_sha256: input.harnessMode?.specSha256 ?? null,
+            resolved_profile: {
+              ...profile,
+              web_search: input.webSearch ?? "live",
+              turn_limit_s: turnLimitSeconds,
+              until: input.until,
+            },
+            client_commit: codeProvenance.clientCommit,
+            runner_commit: codeProvenance.runnerCommit,
+            source_worktree_dirty: codeProvenance.sourceWorktreeDirty,
+            package_version: codeProvenance.packageVersion,
+            package_manifest_sha256: codeProvenance.packageManifestSha256,
+            entry_sha256: codeProvenance.entrySha256,
+            code_tree_sha256: codeProvenance.codeTreeSha256,
+            image: plan.image,
+            models: records.map((seat) => ({ seat: seat.name, driver: seat.driver, model: seat.model })),
+            goal_sha256: sha256(input.goal),
+            opening_prompt_sha256: Object.fromEntries(records.map((seat) => [seat.name, openingPromptHashes[seat.name] ?? null])),
+          },
           agents: records,
           totals: { ...(episode.totals as object), tokens: spend(), cached_tokens: records.reduce((sum, seat) => sum + seat.usage.cached, 0) },
         },
