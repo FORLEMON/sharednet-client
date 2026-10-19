@@ -124,6 +124,8 @@ export interface GoalWatchDependencies {
   now: () => Date;
   sleep?: (ms: number) => Promise<void>;
   stderr?: (value: string) => void;
+  /** Stops a watcher before it can close the Room; serve-backed runs use this on process signals. */
+  signal?: AbortSignal;
   /** Runs a `check` in the workspace; tests replace it. */
   check?: CheckRunner;
   /** Takes a workspace snapshot; tests replace it, and null turns snapshots off. */
@@ -141,6 +143,10 @@ export interface GoalWatchOptions {
   checkEveryMs: number;
   /** Do not post a failing check back into the Room (a controlled experiment). */
   quietChecks: boolean;
+  /** Prefix failing-check feedback with this seat, so a mention-driven listener receives it. */
+  feedbackMention?: string;
+  /** Record messages through this sequence, but do not let runner setup machinery satisfy a trigger. */
+  ignoreThrough?: number;
   /** Read the Room's state at least this often, to notice an end the service or the owner made. */
   roomCheckMs?: number;
 }
@@ -262,12 +268,21 @@ export async function goalWatch(
   const snapshot = dependencies.snapshot === undefined ? workspaceSnapshots(options.workspace, options.out) : dependencies.snapshot;
   const roomPath = `/rooms/${encodeURIComponent(options.roomId)}`;
   const roomCheckMs = options.roomCheckMs ?? 30_000;
+  const throwIfAborted = () => {
+    if (!dependencies.signal?.aborted) return;
+    throw dependencies.signal.reason instanceof Error
+      ? dependencies.signal.reason
+      : localError("goal_interrupted", "Goal watch was interrupted.");
+  };
 
   const readRoom = () => client.request<RoomShape>("GET", roomPath, memberToken);
+  throwIfAborted();
   let view = await readRoom();
+  throwIfAborted();
   const goal = view.room?.goal ?? null;
   if (!goal) throw localError("not_a_goal_room", "That Room has no goal. Start one with sharednet room create --goal <file> --until <trigger>.");
   const startedAt = Date.parse(goal.started_at);
+  const triggerStart = Math.max(goal.sequence, options.ignoreThrough ?? goal.sequence);
   // A budget this CLI cannot read (a dollar amount, from an older CLI) is kept by the service and left unjudged here.
   const triggers = goal.until.flatMap((raw) => {
     try {
@@ -327,12 +342,13 @@ export async function goalWatch(
 
   const feedback = async (content: string) => {
     if (options.quietChecks) return;
+    const addressed = options.feedbackMention ? `@${options.feedbackMention} ${content}` : content;
     try {
       const posted = await client.request<{ message?: { sender_instance_id?: string } }>(
         "POST",
         `${roomPath}/owner-messages`,
         apiKey,
-        { content, as: "runner" },
+        { content: addressed, as: "runner" },
       );
       if (posted?.message?.sender_instance_id) runnerSeats.add(posted.message.sender_instance_id);
     } catch (error) {
@@ -368,7 +384,7 @@ export async function goalWatch(
     // What has come round on the clock, or gone quiet for long enough.
     for (const trigger of triggers) {
       if (end) break;
-      if (trigger.kind === "count" && cursor - goal.sequence >= trigger.count) end = { trigger: trigger.label, detail: null };
+      if (trigger.kind === "count" && cursor - triggerStart >= trigger.count) end = { trigger: trigger.label, detail: null };
       if (trigger.kind === "after" && now >= startedAt + trigger.ms) end = { trigger: trigger.label, detail: null };
       if (trigger.kind === "at" && now >= trigger.time) end = { trigger: trigger.label, detail: null };
       if (trigger.kind === "idle" && lastMessageAt !== null && now - lastMessageAt >= trigger.ms) end = { trigger: trigger.label, detail: null };
@@ -415,6 +431,7 @@ export async function goalWatch(
         continue;
       }
     }
+    throwIfAborted();
 
     let claim: MessageShape | null = null;
     for (const item of items.sort((left, right) => left.sequence - right.sequence)) {
@@ -422,7 +439,7 @@ export async function goalWatch(
       cursor = item.sequence;
       messages += 1;
       await appendFile(roomLog, `${JSON.stringify(item)}\n`);
-      if (item.sequence <= goal.sequence) continue;
+      if (item.sequence <= triggerStart) continue;
       const sender = item.sender_instance_id ?? item.sender?.member_id ?? "";
       if (runnerSeats.has(sender)) continue;
       lastMessageAt = dependencies.now().getTime();
@@ -480,8 +497,10 @@ export async function goalWatch(
   }
 
   // Close with the trigger that fired; the service keeps the first end it was told.
+  throwIfAborted();
   let endedBy = endedByService;
   for (let attempt = 1; !endedBy && end; attempt += 1) {
+    throwIfAborted();
     try {
       const closed = await client.request<{ room?: { goal?: GoalShape | null } }>("POST", `${roomPath}/close`, apiKey, end);
       endedBy = closed?.room?.goal?.ended_by ?? { ...end, at: dependencies.now().toISOString() };
