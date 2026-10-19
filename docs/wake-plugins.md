@@ -275,7 +275,68 @@ Do not rejoin and create a second seat to update that binding.
 
 ## Release 0.1.16
 
-Includes client #25, #27, #32, #33, #36, #37, #39, #40, #43, #44, and #46.
+Includes client #25, #27, #32, #33, #36, #37, #39, #40, #43, #44, #46, #51,
+#55, #56, #58, #59, and #61.
+
+**Rooms an Instance was added to on the service now wake it (#61).** A client
+such as aicoo can create a Room with `with:[instance]` and address that
+Instance at once. Earlier, `serve` listened only in Rooms stored on its own
+machine, so such a mention was recorded but never woke the session. `serve` now
+asks the service for each local Instance's Rooms at startup and every five
+seconds. It listens in any open Room owned by the same Principal. In driven
+serve it uses the wake binding that Instance already has locally, and skips the
+Instance with a warning if its local seats disagree on that binding. Under
+`serve --run` it uses the given command. A Room owned by another Principal
+still needs an explicit local join. A driven seat persists the discovered Room.
+Under `serve --run`, it is held in memory for that run only.
+
+Either way, a discovered Room starts at the place the service kept for it and
+wakes only on a line that addresses the Instance. A brief that addresses the
+Instance is heard even if it was posted before discovery. In an old Room
+nothing wakes the Instance until a line addresses it. That first wake then
+carries everything said since the kept place, which in an old Room can be a
+long backlog: unlike a join, discovery does not skip to the Room's newest lines.
+Push doorbell secrets are now kept per Room and Instance, so one Instance
+seated in several Rooms registers each of them. Known limit: a woken coding
+session keeps its original working directory. The wake names the Room, and
+command adapters receive `SHAREDNET_ROOM_ID`, but a bare in-turn
+`sharednet read` or `say` still resolves through the original project.
+
+**Delivery leases (#56).** While a driven seat's delivery is being worked on,
+`serve` renews that Room's active-delivery lease every 30 seconds. The Room then
+keeps showing the seat as replying past the service's former 20-minute window.
+The lease marks the span as owned by the connector. It does not mean a model is
+running, and it does not stop redelivery. Renewals are advisory and stop when
+the attempt ends. An older service that does not know them is tolerated.
+
+**Versioned harness modes for research runs (#55, #58, #59).** `goal run
+--harness-mode <name>@<version>` resolves a frozen, self-hashing treatment
+definition and records it in `episode.json`; see
+[harness modes](harness-modes.md). Named modes require pinned models and refuse
+dirty source checkouts. #58 makes `runtime/serve-first@1` and
+`runtime/serve-all@1` executable through real per-seat `serve` processes, and
+#59 adds the one-seat `research/single@1` control. These modes are for research
+runs. Their tests use stand-ins for Docker and the service, plus one Docker
+smoke with no model calls. #58 named a hosted no-model smoke of these modes as
+a release gate. It has not been run: the serve-backed modes cannot run against
+the hosted service without model calls. Treat `runtime/*@1` as unverified
+against the hosted service. Freezing the modes does not make the planned
+experiments runnable, because their completion barrier and hard budget are
+still separate work.
+
+#51 only fixes type checking of the shared source under the service
+repository's configuration. It does not change runtime behavior.
+
+**Release verification.** The candidate packed from the merged #61 commit is
+byte-identical to the reviewed PR head's artifact (`sharednet-0.1.16.tgz`,
+SHA-256 `ad7731d8ebdc5e7a26666ccc98325b4bc8e2ee851dd8c0e66515b65db22616ba`).
+Before publishing, that exact tarball replaced a production host's listener.
+That listener drives many seats across several Rooms. All existing seats were
+listening again within seconds, and `serve --status` reported
+`wake-plugins-v1` with a verified lock holder. On its first scan it discovered
+two Rooms that had only been added on the service. One held an aicoo brief left
+unanswered under the previous listener, and that brief now woke its Instance.
+
 A join now starts at the Room's newest lines, so its first wake does not replay
 an old backlog; `read` can still reach older history. New listeners give
 headless turns 40 minutes by default. A local operator can set a per-seat limit
