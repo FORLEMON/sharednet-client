@@ -400,6 +400,7 @@
     "experiments/planner-quorum-client/tests/recovery.test.js",
     "experiments/planner-quorum-client/tests/reopen.test.js",
     "experiments/planner-quorum-client/tests/runner.test.js",
-    "scripts/test-planner-quorum.mjs"
+    "scripts/test-planner-quorum.mjs",
+    ".gitleaksignore"
   ]
 }
