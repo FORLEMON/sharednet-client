@@ -162,6 +162,7 @@ export function workspaceSnapshots(workspace, out) {
 export async function goalWatch(client, memberToken, apiKey, options, dependencies) {
     const coordination = dependencies.coordination;
     const quorum = coordination?.allDoneMode ?? false;
+    const fixedWorkMs = options.fixedWorkMs ?? 0;
     const sleep = dependencies.sleep ?? ((ms) => new Promise((resolveSleep) => setTimeout(resolveSleep, ms)));
     const log = dependencies.stderr ?? (() => undefined);
     const runCheck = dependencies.check ?? defaultCheck;
@@ -297,7 +298,7 @@ export async function goalWatch(client, memberToken, apiKey, options, dependenci
             if (state.ranAt !== null && now - state.ranAt < options.checkEveryMs)
                 continue;
             const result = await evaluate(check, "schedule");
-            if (result.startedPassing)
+            if (result.startedPassing && !fixedWorkMs)
                 end = { trigger: check.label, detail: result.output.trim() || null };
         }
         if (end)
@@ -352,6 +353,15 @@ export async function goalWatch(client, memberToken, apiKey, options, dependenci
             lastMessageAt = dependencies.now().getTime();
             if (end)
                 continue;
+            if (fixedWorkMs) {
+                if (item.content.trim() === "DONE") {
+                    const remaining = Math.max(0, Math.ceil((startedAt + fixedWorkMs - dependencies.now().getTime()) / 1000));
+                    await appendFile(join(options.out, "work-window.ndjson"), JSON.stringify({ type: "done_ignored", sender, sequence: item.sequence, remaining_seconds: remaining, at: dependencies.now().toISOString() }) + "\n");
+                    try { await client.request("POST", `${roomPath}/owner-messages`, apiKey, { content: `#${item.sequence}: DONE does not end this fixed-window run. ${remaining}s remain. Continue your next useful task step, verify results, or review another member's work.`, as: "runner" }); }
+                    catch (error) { log("goal: fixed-window feedback unavailable; timer wakes remain enabled\n"); }
+                }
+                continue;
+            }
             if (triggers.some((trigger) => trigger.kind === "message"))
                 end = { trigger: "message", detail: item.content.slice(0, 500) };
             else if (goalSpeaker !== null &&
@@ -366,7 +376,7 @@ export async function goalWatch(client, memberToken, apiKey, options, dependenci
         if (items.length > 0)
             await takeSnapshot(`seq ${cursor}`);
         // A claim of being done: the check decides when there is one, and a failing check is said back.
-        if (!end && claim && !quorum) {
+        if (!end && claim && !quorum && !fixedWorkMs) {
             const claimed = said.find((trigger) => saidIn(claim.content, trigger));
             if (checks.length === 0) {
                 end = { trigger: claimed.label, detail: claim.content.slice(0, 500) };

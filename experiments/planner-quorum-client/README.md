@@ -1,4 +1,4 @@
-# SharedNet planner/quorum experiment client
+# SharedNet coordination and working-window experiment client
 
 Local, independent runtime fork of the **deployed SharedNet 0.1.12 exact-DONE client**.
 The older local TypeScript checkout is 0.1.10 and was not used as the runtime base.
@@ -9,7 +9,21 @@ Do not run an upstream build over these files.
 
 No flags means the original simultaneous startup and any-agent/check completion
 path. The original local checkout and the installed server client are unchanged.
-This package is private and has no Git remote.
+This package is private and remains outside the production CLI workspace.
+The historical directory name is retained for compatibility. Version
+`0.1.12-work-window.1` includes planner-quorum.3 plus optional work-window controls.
+
+## Choose an experiment mode
+
+- Default: simultaneous startup and legacy any-agent/check completion.
+- Coordination: `--startup-mode planner-first --completion-policy all-agents-done`.
+- Fixed window: `--fixed-work 30m`; DONE/checks cannot end early.
+- Persistent research prompt: `--research-effort persistent`.
+- Window plus prompt: enable both preceding flags.
+
+Work-window/persistent-prompt options reject enabled planner/quorum modes.
+Including both implementations does not combine their scheduling semantics.
+See [WORK-WINDOW.md](WORK-WINDOW.md) for limits and evidence fields.
 
 ## Enable the experiment
 
@@ -138,7 +152,7 @@ closing the room; the detailed completion status is stored locally.
 - All old DONE votes are cleared. In-flight turns drain, then a new planner is
   selected uniformly from survivors. It must publish a redistribution plan and
   `PLAN_READY` before survivors execute the next round. This also covers loss of
-  the original planner. Other running agents are not killed to force replanning.
+  the original planner. After the bounded recovery grace, still-running turns are cancelled as described below.
 - Survivors must all finish again and pass the final checks. Such a run is
   `completed_degraded`. If everyone exits, the run is `failed`. Time/budget
   exhaustion is `timeout` / `budget_exhausted`, never degraded completion.

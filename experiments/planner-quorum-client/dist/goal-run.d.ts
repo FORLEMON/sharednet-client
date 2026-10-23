@@ -161,6 +161,7 @@ export interface SeatRecord {
     usage: Usage;
 }
 export interface GoalRunInput {
+    work?: { fixedWorkMs?: number; researchEffort?: "standard" | "persistent" };
     coordination?: CoordinationOptions;
     plan: RunPlan;
     roomId: string;

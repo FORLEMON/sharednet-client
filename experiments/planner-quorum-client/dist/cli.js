@@ -1,3 +1,4 @@
+import { workOptions, workTriggers } from "./work-window.js";
 import { coordinationOptions } from "./coordination.js";
 import { randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
@@ -44,6 +45,8 @@ const optionValueNames = new Set([
     "image",
     "web-search",
     "turn-limit",
+    "fixed-work",
+    "research-effort",
     "startup-mode",
     "completion-policy",
     "planner-seed",
@@ -369,9 +372,9 @@ async function goalCommand(action, commandArgs, globals, dependencies) {
  * is checked before the Room exists.
  */
 async function goalRunCommand(parsed, globals, dependencies) {
-    assertOnlyOptions(parsed, ["agent", "until", "workspace", "out", "name", "image", "check-every", "quiet-checks", "web-search", "turn-limit", "startup-mode", "completion-policy", "planner-seed"]);
+    assertOnlyOptions(parsed, ["agent", "until", "workspace", "out", "name", "image", "check-every", "quiet-checks", "web-search", "turn-limit", "startup-mode", "completion-policy", "planner-seed", "fixed-work", "research-effort"]);
     if (parsed.positionals.length !== 1) {
-        throw localError("invalid_arguments", "Usage: sharednet goal run <goal file> --agent codex[:model] [--agent claude-code[:model]]... --until <trigger> [--until ...] [--workspace <dir>] [--out <dir>] [--name <name>] [--image <image>] [--check-every 1m] [--quiet-checks] [--web-search live|off] [--turn-limit 20m] [--startup-mode simultaneous|planner-first] [--completion-policy any-agent|all-agents-done] [--planner-seed <seed>]");
+        throw localError("invalid_arguments", "Usage: sharednet goal run <goal file> --agent codex[:model] [--agent claude-code[:model]]... --until <trigger> [--until ...] [--workspace <dir>] [--out <dir>] [--name <name>] [--image <image>] [--check-every 1m] [--quiet-checks] [--web-search live|off] [--turn-limit 20m] [--startup-mode simultaneous|planner-first] [--completion-policy any-agent|all-agents-done] [--planner-seed <seed>] [--fixed-work 30m] [--research-effort standard|persistent]");
     }
     const webSearch = option(parsed, "web-search") ?? "live";
     if (webSearch !== "live" && webSearch !== "off") {
@@ -385,6 +388,8 @@ async function goalRunCommand(parsed, globals, dependencies) {
     const until = parseUntilList(parsed.repeated.get("until") ?? [], dependencies.now().getTime(), { budget: true });
     const coordination = coordinationOptions({ startupMode: option(parsed, "startup-mode"),
         completionPolicy: option(parsed, "completion-policy"), plannerSeed: option(parsed, "planner-seed") }, until.wire);
+    const work = workOptions({ fixedWorkMs: parsed.options.has("fixed-work") ? parseDuration(option(parsed, "fixed-work"), "--fixed-work") : 0, researchEffort: option(parsed, "research-effort") ?? "standard" }, coordination);
+    until.wire = workTriggers(until.wire, work);
     const agents = parseAgents(parsed.repeated.get("agent") ?? []);
     const workspace = resolvePathFrom(dependencies.cwd, option(parsed, "workspace") ?? ".");
     if (!(await stat(workspace).then((entry) => entry.isDirectory(), () => false))) {
@@ -428,6 +433,7 @@ async function goalRunCommand(parsed, globals, dependencies) {
         try {
             return await runGoal(client, session.instance_token, apiKey, {
                 plan,
+                work,
                 ...(coordination.enabled ? { coordination } : {}),
                 roomId,
                 inviteToken: invite.token,

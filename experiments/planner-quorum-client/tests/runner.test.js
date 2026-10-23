@@ -7,7 +7,7 @@ import { runGoal } from "../dist/goal-run.js";
 import { goalWatch } from "../dist/goal.js";
 import { runCli } from "../dist/cli.js";
 
-async function simulation(t, { failSeat = null, failFirstCheck = false, bound = "after 5m", legacy = false, stuckWorkers = false } = {}) {
+async function simulation(t, { failSeat = null, failFirstCheck = false, bound = "after 5m", legacy = false, stuckWorkers = false, work = undefined } = {}) {
     const root = await mkdtemp(join(tmpdir(), "sharednet-quorum-test-"));
     t.after(() => rm(root, { recursive: true, force: true }));
     const workspace = join(root, "workspace"), out = join(root, "out");
@@ -17,14 +17,14 @@ async function simulation(t, { failSeat = null, failFirstCheck = false, bound = 
     const agents = [0, 1, 2].map(i => ({ name: `codex-${i + 1}`, driver: "codex", model: i ? "luna" : "astra" }));
     const queued = [], commands = [], turns = [], events = [];
     const stuck = new Map(), held = new Set();
-    const until = ["said /^DONE$/", "check check-report", bound];
+    const until = work?.fixedWorkMs ? ["check check-report", "after 60s"] : ["said /^DONE$/", "check check-report", bound];
     let closed = null;
     const say = (name, content) => queued.push({ sequence: ++sequence, content, sender_instance_id: `id-${name}`, sender: { name } });
     const room = () => ({ room: { state: closed ? "closed" : "open", goal: {
         sequence: 1, started_at: start, until, ended_by: closed } }, memberships: [] });
     const client = { async request(method, path, token, body) {
         if (path.includes("/wait?")) {
-            await new Promise(resolve => setTimeout(resolve, 5)); clock += 1000;
+            await new Promise(resolve => setTimeout(resolve, 5)); clock += work?.fixedWorkMs ? 10000 : 1000;
             if (++polls > 400) throw new Error("test runaway");
             return { items: queued.splice(0) };
         }
@@ -71,13 +71,19 @@ async function simulation(t, { failSeat = null, failFirstCheck = false, bound = 
             options.onLine(JSON.stringify({ type: "turn.completed", usage: { input_tokens: 100, cached_input_tokens: 20, output_tokens: 10 } }));
             return { code: 0, stdout: "", stderr: "" };
         }
-        if (args.includes("wait")) return { code: 0, stdout: JSON.stringify({ fired: ["closed"] }), stderr: "" };
+        if (args.includes("wait")) {
+            if (work?.fixedWorkMs) {
+                await new Promise(resolve => setTimeout(resolve, 5));
+                return { code: 0, stdout: JSON.stringify({ fired: ["after"], messages: [], from: 1, through: sequence }), stderr: "" };
+            }
+            return { code: 0, stdout: JSON.stringify({ fired: ["closed"] }), stderr: "" };
+        }
         return { code: 0, stdout: "", stderr: "" };
     };
     const result = await runGoal(client, "dummy-member", "dummy-owner", {
         plan: { agents, image: "fake-image", workspace, cli: { root, entry: "bin/sharednet.js" }, codexAuth: { kind: "api-key" } },
         roomId: "rom_test", inviteToken: "dummy-invite", goal: "Solve Math_001", goalSequence: 1,
-        until, baseUrl: "https://example.invalid", out, checkEveryMs: 60_000, quietChecks: true,
+        work, until, baseUrl: "https://example.invalid", out, checkEveryMs: 60_000, quietChecks: true,
         ...(legacy ? {} : { coordination: { startupMode: "planner-first", completionPolicy: "all-agents-done", plannerSeed: "integration" } }),
     }, { docker, now: () => new Date(clock), sleep: async () => {} });
     return { result, turns, events, commands, checkCount, episode: JSON.parse(await readFile(join(out, "episode.json"))),
@@ -177,3 +183,21 @@ test("quorum watcher requires ALL checks; wall bound wins if final check overrun
     assert.ok(f.commands.some(a=>a[0]==="start"));
     for(const a of f.result.agents.filter(a=>a.name!=="codex-2")) assert.equal(a.failed_turns,0);
  });
+
+test("fixed window: simultaneous starts, DONE/check do not finish, timer resumes seats, deadline stops", async t => {
+    const f = await simulation(t, { legacy: true, work: { fixedWorkMs: 60000, researchEffort: "standard" } });
+    assert.equal(f.result.ended_by.trigger, "after 60s");
+    assert.ok(f.turns.length > 3);
+    for (const seat of ["codex-1", "codex-2", "codex-3"]) assert.ok(f.turns.filter(t => t.seat === seat).length > 1);
+    assert.equal(f.episode.coordination, undefined);
+    assert.equal(f.episode.work_policy.fixedWorkMs, 60000);
+    assert.ok(f.events.some(e => e.content.includes("DONE does not end")));
+    assert.ok(f.commands.some(c => c.includes("after 10s")));
+    assert.ok(f.turns.every(t => !t.prompt.includes("randomly selected as planner")));
+});
+test("prompt only keeps early completion and does not install timer wakes", async t => {
+    const f = await simulation(t, { legacy: true, work: { researchEffort: "persistent" } });
+    assert.equal(f.result.ended_by.trigger, "check check-report");
+    assert.ok(f.turns[0].prompt.includes("strongest scientifically justified"));
+    assert.ok(!f.commands.some(c => c.includes("after 10s")));
+});

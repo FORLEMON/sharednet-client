@@ -1,16 +1,17 @@
 {
+  "bin/sharednet.js": "022d65c9ac92157f2f20696cde6658b65b68eebc874d1fc98e08dc1dda1367a3",
   "dist/api-client.d.ts": "cf406ac7fa6deb95c04afb42780f5bbf0030b30bd50b8e375562533494f570cd",
   "dist/api-client.js": "a1914420687eff38ab218016a9da9da46cd3ccf5b09f49dd31c7f6a1b58b0704",
   "dist/cli.d.ts": "fef67dd1d16a47b385a2b38c713b896e72cecf6f6dc5b3e5e8241bfac5ea0121",
-  "dist/cli.js": "df43534fc8fa2ee2f4c7ad99cd622f39cfce447826aff17cf2db2cc492aa82a7",
+  "dist/cli.js": "6152144b6df39e57a45cd2afb80c366a64a1b51e29351ddb536c37ea74e005d7",
   "dist/coordination.d.ts": "1d4c2e0f4c4c0321403f6e8bae9b6ce080a36d39ad23eeaa12837364511d7713",
   "dist/coordination.js": "7a6f4dd6084cac1d5e35b0653cd3703e62343bf2cc637a7b971fe86aaeb7cae4",
   "dist/errors.d.ts": "3c19e6ec4324068b45d6920291cfb5c7345cdc8c00b1e09f9e011bb30ac80ee4",
   "dist/errors.js": "1e300dd352b6755f27d9f66008337bbabc74a27b1535b6c45453ce92ebd03804",
-  "dist/goal-run.d.ts": "8c477be744953d55010960fb6a49b4ce412be2b57ea8987bbad60b504a22b4f0",
-  "dist/goal-run.js": "f5a74ebc4cf9f4ae1feccfcfeb4b03ff9bf4fd201372af2b62672a8338106768",
-  "dist/goal.d.ts": "8e6d9f620db8339ef04138c8fbdf92bdbb926c5c194cb8ccc2ecfb45c4e8a36e",
-  "dist/goal.js": "7728d92187d96a4fc3d22b3fbb7d2893555c291a2d41c1ccf4e84675f44f5394",
+  "dist/goal-run.d.ts": "03ae56c3e36733f549834df6dbe82fd1f74b187db2d14305a971154240d3e49c",
+  "dist/goal-run.js": "e92707f4790199b463c94e252c84eca7957534957549fe955fc5dcb9d81d0ea4",
+  "dist/goal.d.ts": "185c43c04f53cfe465186a699db257671d2e722be46690c19db8f7ed75210bef",
+  "dist/goal.js": "5d0490f61653c0cd2331a0712edff18d235d8fa0b2f9fba4a9a69d8bcf072d63",
   "dist/guest.d.ts": "600d56c3369ddc671160de0ee4e2f7ef505efab4b6b22dd2707f340c7b1fbbbb",
   "dist/guest.js": "3ea21ae8d98ec88253d5386ae6de959fad9afccfb299919142cc4d3d283481ff",
   "dist/instance-computation.d.ts": "c34eba4a9ebd0a9cf9b741f2b486d5794c33a61f3e3e0877161b0d3e5f0e398a",
@@ -29,5 +30,5 @@
   "dist/triggers.js": "6732c9a17b8f4aae93a51a852fd77dac92e677de4a8893efd59e03006209c356",
   "dist/wake-driver.d.ts": "79e81b0a0ff3eb0a5381af66007d119c92f6bd66bed89335966dc7ee38d0af10",
   "dist/wake-driver.js": "589b118d07ef2c34eaaee71c1daa82ebbf4632ce2dc960bae266fb9ede25645b",
-  "bin/sharednet.js": "022d65c9ac92157f2f20696cde6658b65b68eebc874d1fc98e08dc1dda1367a3"
+  "dist/work-window.js": "7da0cd80f4ea030907e0a01b304447dd63f702ede8036ca66712e75d2268539b"
 }

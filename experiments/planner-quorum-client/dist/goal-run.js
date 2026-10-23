@@ -1,3 +1,4 @@
+import { workOptions, workPrompt } from "./work-window.js";
 import { Coordination, coordinationOptions } from "./coordination.js";
 import { spawn } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
@@ -293,6 +294,15 @@ export class TurnReader {
 /** Creates nothing outside its containers and the record; the Room and its goal already exist. */
 export async function runGoal(client, memberToken, apiKey, input, dependencies) {
     const mode = coordinationOptions(input.coordination, input.until);
+    const work = workOptions(input.work, mode);
+    let deadline = null;
+    if (work.fixedWorkMs) {
+        const view = await client.request("GET", `/rooms/${encodeURIComponent(input.roomId)}`, memberToken);
+        const start = Date.parse(view.room?.goal?.started_at);
+        if (!Number.isFinite(start)) throw localError("invalid_server_response", "Missing fixed-window start time.");
+        deadline = start + work.fixedWorkMs;
+    }
+    const instructions = () => workPrompt(work, deadline, dependencies.now().getTime());
     let coordination = null;
     let coordinationWrites = Promise.resolve();
     let coordinationWriteError = null;
@@ -514,9 +524,11 @@ export async function runGoal(client, memberToken, apiKey, input, dependencies) 
         // One policy for every seat: woken by anything another member says, merged over 2 s, until the Room closes.
         const seatLoop = async (seat) => {
             let prompt = openingPrompt({ seat, seats: plan.agents, roomId: input.roomId, goal: input.goal, goalSequence: input.goalSequence, until: input.until });
+            if (work.fixedWorkMs) prompt = prompt.replace(`The Room ends when the first of these happens: ${input.until.join("; ")}.`, "The fixed deadline and safety bounds control termination; completion checks are diagnostic only.");
+            prompt += "\n" + instructions();
             let wake = null;
             let failedInARow = 0;
-            while (!ended) {
+            while (!ended && (!deadline || dependencies.now().getTime() < deadline)) {
                 const failed = await runTurn(seat, prompt, wake);
                 if (wake?.wake_id)
                     await exec(seat, ["sharednet", "ack", wake.wake_id, "--json"]);
@@ -527,7 +539,7 @@ export async function runGoal(client, memberToken, apiKey, input, dependencies) 
                     log(`goal: ${seat.name} failed ${FAILED_TURNS_LIMIT} turns in a row and takes no more; see agents/${seat.name}/\n`);
                     break;
                 }
-                const waited = await exec(seat, ["sharednet", "wait", "--on", "message", "--on", "closed", "--settle", "2s", "--ack", "manual", "--json"]);
+                const waited = await exec(seat, ["sharednet", "wait", "--on", "message", "--on", "closed", ...(work.fixedWorkMs ? ["--on", "after 10s"] : []), "--settle", "2s", "--ack", "manual", "--json"]);
                 if (ended || waited.code !== 0)
                     break;
                 try {
@@ -538,7 +550,8 @@ export async function runGoal(client, memberToken, apiKey, input, dependencies) 
                 }
                 if (wake.fired.includes("closed"))
                     break;
-                prompt = wakePrompt(wake);
+                prompt = wakePrompt(wake) + "\n" + instructions();
+                if (work.fixedWorkMs) await appendFile(join(input.out, "work-window.ndjson"), JSON.stringify({ type: "continuation_wake", seat: seat.name, at: dependencies.now().toISOString(), fired: wake.fired, deadline: new Date(deadline).toISOString() }) + "\n");
             }
         };
         if (mode.enabled) {
@@ -552,7 +565,7 @@ export async function runGoal(client, memberToken, apiKey, input, dependencies) 
         const seats = coordination ? [] : records.map((seat) => seatLoop(seat).catch((error) => {
             log(`goal: ${seat.name} stopped (${error instanceof Error ? error.message : "error"})\n`);
         }));
-        const watched = await goalWatch(client, memberToken, apiKey, { roomId: input.roomId, workspace: plan.workspace, out: input.out, checkEveryMs: input.checkEveryMs, quietChecks: input.quietChecks }, {
+        const watched = await goalWatch(client, memberToken, apiKey, { roomId: input.roomId, workspace: plan.workspace, out: input.out, checkEveryMs: input.checkEveryMs, quietChecks: input.quietChecks, fixedWorkMs: work.fixedWorkMs }, {
             now: dependencies.now,
             ...(dependencies.sleep ? { sleep: dependencies.sleep } : {}),
             stderr: log,
@@ -590,6 +603,7 @@ export async function runGoal(client, memberToken, apiKey, input, dependencies) 
         const episode = JSON.parse(await readFile(episodePath, "utf8"));
         await writeFile(episodePath, `${JSON.stringify({
             ...episode,
+            ...((work.fixedWorkMs || work.researchEffort !== "standard") ? { work_policy: { ...work, deadline: deadline ? new Date(deadline).toISOString() : null, startup_mode: mode.startupMode, completion_policy: mode.completionPolicy } } : {}),
             image: plan.image,
             web_search: input.webSearch ?? "live",
             turn_limit_s: turnLimitSeconds,

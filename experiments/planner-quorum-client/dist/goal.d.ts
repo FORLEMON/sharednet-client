@@ -57,6 +57,7 @@ export interface GoalWatchOptions {
     checkEveryMs: number;
     /** Do not post a failing check back into the Room (a controlled experiment). */
     quietChecks: boolean;
+    fixedWorkMs?: number;
     /** Read the Room's state at least this often, to notice an end the service or the owner made. */
     roomCheckMs?: number;
 }

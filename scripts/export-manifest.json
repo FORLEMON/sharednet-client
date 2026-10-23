@@ -401,6 +401,9 @@
     "experiments/planner-quorum-client/tests/reopen.test.js",
     "experiments/planner-quorum-client/tests/runner.test.js",
     "scripts/test-planner-quorum.mjs",
-    ".gitleaksignore"
+    ".gitleaksignore",
+    "experiments/planner-quorum-client/WORK-WINDOW.md",
+    "experiments/planner-quorum-client/dist/work-window.js",
+    "experiments/planner-quorum-client/tests/work-window.test.js"
   ]
 }
